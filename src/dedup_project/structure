@@ -1,0 +1,29 @@
+/**
+ * dedup() SystemDS Project
+ * 
+ * Purpose: Identify and remove duplicate rows in a matrix using blocking and similarity.
+ *
+ * Workflow:
+ * MatrixBlock dataset
+ *   -> LSHBlocker.block() or KMeansBlocker.cluster()
+ *   -> DuplicateDetector.detect()
+ *   -> MatrixUtils.removeRows() or extractRows()
+ *   -> BuiltinDedupFunction.processInstruction()
+ *
+ *How they connect?
+ *
+    * Input matrix
+    *  ↓
+    * BuiltinDedup.processInstruction()   ← orchestrates the workflow
+    *   ↓
+    * LSHBlocker.block() or KMeansBlocker.cluster() ← divide into blocks
+    *   ↓
+    * DuplicateDetector.detect()                  ← find similar row pairs
+    *   ↓
+    * MatrixUtils.removeRows() or extractRows()   ← remove or extract rows
+    *   ↓
+    * Output matrix (with or without duplicates)
+    *
+ *
+ *
+ */

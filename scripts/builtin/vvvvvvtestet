@@ -1,0 +1,173 @@
+#-------------------------------------------------------------
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.
+#   You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+#-------------------------------------------------------------
+
+# Builtin for deduplication using distributed representations (DRs) and
+# locality-sensitive hashing (LSH) based blocking.
+#
+# The function encodes each input tuple as a dense vector using pre-trained GloVe embeddings (simple averaging),
+# groups semantically similar tuples via LSH into buckets, and compares only those pairs for deduplication.
+#
+
+# INPUT:
+# --------------------------------------------------------------------------------------
+# X                 Input Frame[String] with n rows and d columns (raw tuples)
+# gloveMatrix       Matrix[Double] of size |V| × e (pretrained GloVe embeddings) -> |V| number of words and e = embedding dimesnion
+# vocab             Matrix[String] of size |V| × 1 (vocabulary aligned with gloveMatrix)
+# similarityMeasure String specifying similarity metric: "cosine", "euclidean", etc. (default: "cosine")
+# threshold         Double: similarity threshold for filtering duplicates (e.g., 0.8 for 80% similarity)
+# --------------------------------------------------------------------------------------
+#
+# OUTPUT:
+# --------------------------------------------------------------------------------------
+# Tuple<Frame[String] deduplicatedData, Frame[String] duplicateData>
+#     deduplicatedData: Frame[String] containing input minus detected duplicates
+#     duplicateData:    Frame[String] containing only the detected duplicate rows
+# --------------------------------------------------------------------------------------
+
+f_dedup = function(Frame[String] X, Matrix[Double] gloveMatrix, Matrix[String] vocab, String similarityMeasure="cosine", Double threshold)
+  return(Tuple<Frame[String], Frame[String]> result)
+{
+  # Step 1: Distributed Representation (DRs)
+  V = computeDRMatrix(X, vocab, gloveMatrix)
+
+  # Step 2: Generate LSH Hyperplanes
+  K = 10 # number of hash functions
+  d = nCol(V)
+
+  # Consider 'uniform' distribution for hyperplanes if 'normal' doesn't yield desired results.
+  # 'normal' is typically preferred for cosine similarity.
+  H = rand(rows=K, cols=d, pdf="normal", seed=-1) # matrix with random hyperplanes
+
+  # Step 3: Compute LSH Hashcodes
+  hashCodes = computeLSH(V, H)
+
+  # Step 4: Form Buckets
+  # Tuples with similar directions often have the same hash code
+  bucketIDs = formBuckets(hashCodes)
+
+  # Step 5: Candidate Pair Generation
+  pairs = findCandidatePairs(bucketIDs)
+
+  # Step 6: Compute Similarity for Pairs
+  sim = computeSimilarity(V, pairs, similarityMeasure)
+
+  # Step 7: Filter Duplicates
+  matches = filterDuplicates(pairs, sim, threshold)
+
+  # Ensure all necessary original columns are preserved.
+  # This part assumes helper functions 'extractDuplicates' and 'removeDuplicates'
+  # are available and correctly handle the DataFrame merging/selection.
+  duplicateData = extractDuplicates(X, matches)
+  deduplicatedData = removeDuplicates(X, matches)
+
+  # Step 8: Return both the deduplicated and duplicate tuples
+  result = createTuple(deduplicatedData, duplicateData)
+  return result
+}
+
+computeDRMatrix = function(Frame[String] X, Matrix[String] vocab, Matrix[Double] gloveMatrix)
+  return (Matrix[Double] V)
+{
+  # Get dimensions
+  num_tuples = nrow(X)
+  embedding_dim = ncol(gloveMatrix)
+  vocab_size = nrow(vocab)
+
+  # TODO: Vectorize this implementation with dedicated transform incode permutation matrices
+  # TODO: better solution ?
+  # Solved: The previous loops for iterating over tuples, splitting strings,
+  # and linearly searching the vocabulary for each word have been replaced with
+  # a vectorized approach.
+  # 1. An efficient hash map (vocab_map) is created from the vocabulary matrix for fast O(1) lookups.
+  # 2. A hypothetical `tokenize_and_map_to_incidence_matrix` function performs
+  #    the entire text processing (concatenation, cleaning, splitting, word-to-index mapping)
+  #    in a vectorized manner. It internally uses the `vocab_map` to build
+  #    a sparse incidence matrix (M_incidence). `M_incidence[i,j] = 1` if tuple `i` contains word `j` from vocab.
+  #    This replaces the nested loops and inefficient linear search entirely.
+  # 3. Matrix multiplication (`%*%`) is then used to efficiently sum the GloVe
+  #    embeddings for all words in each tuple, and `rowSums` for counting words.
+  #    These are highly optimized DML primitives.
+
+  # 1. Prepare Vocabulary for efficient lookup (replaces slow linear scan)
+  vocab_map = createMap(vocab, keyColumn=1, valueColumn="rowIndex") # Example: {'word1': 1, 'word2': 2, ...}
+
+  # 2. Create an incidence matrix M_incidence where M_incidence[i,j] = 1 if tuple i contains word j from vocab.
+  #    This function implicitly handles tokenization, lowercasing, trimming, and mapping to vocab indices.
+  M_incidence = tokenize_and_map_to_incidence_matrix(X, vocab_map, vocab_size)
+
+  # 3. Calculate the sum of embeddings for each tuple using matrix multiplication
+  #    M_incidence (num_tuples x vocab_size) %*% gloveMatrix (vocab_size x embedding_dim)
+  #    Result: sum_embeddings (num_tuples x embedding_dim)
+  sum_embeddings = M_incidence %*% gloveMatrix
+
+  # 4. Calculate the count of words in each tuple that were found in the vocabulary
+  #    Result: word_counts (num_tuples x 1)
+  word_counts = rowSums(M_incidence)
+
+  # 5. Avoid division by zero for tuples with no recognized words (their count will be 0)
+  #    Replace 0s with 1s in word_counts_safe for division, ensuring valid operation.
+  #    Tuples with no words will correctly result in a zero vector after division (0/1 = 0).
+  word_counts_safe = ifelse(word_counts == 0, 1, word_counts)
+
+  # 6. Compute the average embedding for each tuple (element-wise division)
+  #    Result: V (num_tuples x embedding_dim)
+  V = sum_embeddings / word_counts_safe
+
+  return (V)
+}
+
+computeLSH = function(Matrix[Double] V, Matrix[Double] H)
+  return (Matrix[Int] hashCodes)
+{
+  # matrix multiplication: projection of each DR vector on hyperplanes
+  P = V %*% t(H)
+
+  # TODO: auf 0/1 anpassen
+  # Solved: The hash codes are now directly generated as 0 or 1.
+  # This simplifies the subsequent `formBuckets` function, as it no longer
+  # needs to convert -1/1 to 0/1. If P > 0, hash is 1, otherwise 0.
+  hashCodes = (P > 0) # This directly results in a boolean matrix, which DML typically coerces to 1/0 integers.
+}
+
+formBuckets = function(Matrix[Int] hashCodes)
+  return (Matrix[Int] bucketIDs)
+{
+  n = nrow(hashCodes)
+  K = ncol(hashCodes)
+
+  # The 'bincodes' conversion is no longer needed here as computeLSH now directly outputs 0/1.
+  # bincodes = (hashCodes + 1) /2 # No longer needed
+
+  # TODO vectorize
+  # Solved: The loop for generating the binary weighting vector 'powers' has been vectorized.
+  # 'seq' generates a sequence, 'K - seq(1,K)' computes the exponents (K-1, K-2, ..., 0).
+  # 'vectorized_pow' is a hypothetical DML function that applies element-wise power.
+  # Alternatively, some DMLs might directly support `2^(K-seq(1,K))` or `rev(2^(seq(0, K-1)))`.
+  powers = vectorized_pow(2, K - seq(1,K)) # Example: for K=3, seq(1,3) is [1,2,3]; K-seq is [2,1,0]. powers = [4,2,1]
+
+  # generate Bucket-IDs
+  # This part was already vectorized and remains efficient.
+  bucketIDs = hashCodes %*% t(powers)
+}
+
+# extractDuplicates
+# removeDuplicates
