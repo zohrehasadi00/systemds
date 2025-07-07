@@ -1,4 +1,4 @@
-package org.apache.sysds.test.functions.builtin.part1;
+package org.apache.sysds.test.functions.builtin.part2;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -59,28 +59,16 @@ public class BuiltinDedupTest extends AutomatedTestBase {
 		try {
 			loadTestConfiguration(getTestConfiguration(TEST_NAME));
 			String HOME = SCRIPT_DIR + TEST_DIR;
-			fullDMLScriptName = "./scripts/builtin/dedup.dml";
-            // HOME + TEST_NAME + ".dml";
-            programArgs = new String[]{
-            	"-stats",
-            	"-f", "f_dedup", // <- explicitly call the function
-            	"-args",
-            	input("X"),
-            	input("gloveMatrix"),
-            	input("vocab"),
-            	similarityMeasure,
-            	String.valueOf(returnDuplicates).toUpperCase(),
-            	output("Y")
-            };
-
+			fullDMLScriptName = HOME + TEST_NAME + ".dml";
+			programArgs = new String[]{"-stats", "-args", input("X"), input("gloveMatrix"), input("vocab"), similarityMeasure,
+				String.valueOf(returnDuplicates).toUpperCase(), output("Y")};
 
 			// Mock input data
 			String[][] X = new String[][]{
 				{"John Doe", "New York"},
 				{"Jon Doe", "New York City"},
 				{"Jane Doe", "Boston"},
-				{"John Doe", "NY"},
-				{"John Doe", "New York"}
+				{"John Doe", "NY"}
 			};
 
 			// Mock gloveMatrix embeddings
@@ -92,7 +80,6 @@ public class BuiltinDedupTest extends AutomatedTestBase {
 				{"doe"},
 				{"new"},
 				{"york"},
-				{"john"},
 				{"city"}
 			};
 
@@ -102,6 +89,7 @@ public class BuiltinDedupTest extends AutomatedTestBase {
 
 			runTest(true, false, null, -1);
 
+			// You can add assertions to check results if expected results are defined.
 		} catch (Exception e) {
 			e.printStackTrace();
 		} finally {

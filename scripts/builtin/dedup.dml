@@ -19,27 +19,10 @@
 #
 #-------------------------------------------------------------
 
-# Builtin for deduplication using distributed representations (DRs) and
-# locality-sensitive hashing (LSH) based blocking.
 #
-# The function encodes each input tuple as a dense vector using pre-trained GloVe embeddings (simple averaging),
-# groups semantically similar tuples via LSH into buckets, and compares only those pairs for deduplication.
+# Builtin for deduplication using distributed representations (DRs)
+# and locality-sensitive hashing (LSH) based blocking.
 #
-#
-# INPUT:
-# --------------------------------------------------------------------------------------
-# X                 Input Frame[String] with n rows and d columns (raw tuples)
-# gloveMatrix       Matrix[Double] of size |V| × e (pretrained GloVe embeddings) -> |V| number of words and e = embedding dimesnion
-# vocab             Matrix[String] of size |V| × 1 (vocabulary aligned with gloveMatrix)
-# similarityMeasure String specifying similarity metric: "cosine", "euclidean", etc.
-# returnDuplicates  Boolean: if TRUE, return only detected duplicate rows;
-#                   if FALSE, return input minus all detected duplicates
-# --------------------------------------------------------------------------------------
-#
-# OUTPUT:
-# --------------------------------------------------------------------------------------
-# Y    Frame[String] of deduplicated or duplicate-only tuples
-# --------------------------------------------------------------------------------------
 
 f_dedup = function(
     Frame[String] X,
@@ -49,40 +32,57 @@ f_dedup = function(
     Boolean returnDuplicates = FALSE)
   return(Frame[String] Y)
 {
-  # Step 1: Distributed Representation (DRs)
+  #### Step 1: Distributed Representation (DRs) ####
   V = computeDRMatrix(X, vocab, gloveMatrix)
 
-  # Step 2: generate LSH Hyperplanes
+  #### Step 2: Generate LSH Hyperplanes ####
   K = 10
   d = ncol(V)
-  H = rand(rows=K, cols=d, pdf='uniform', seed=-1)
+  H = rand(rows=K, cols=d, pdf="uniform", seed=-1)
 
-  # Step 3: Compute LSH Hashcodes
+  #### Step 3: Compute LSH Hashcodes ####
   hashCodes = computeLSH(V, H)
 
-  # Step 4: Form Buckets
+  #### Step 4: Form Buckets ####
   bucketIDs = formBuckets(hashCodes)
 
-  # Step 5: Candidate Pair Generation
+  #### Step 5: Candidate Pair Generation ####
   pairs = findCandidatePairs(bucketIDs)
 
-  # Step 6: Compute Similarity for Pairs
+  #### Step 6: Compute Similarity for Pairs ####
   sim = computeSimilarity(V, pairs, similarityMeasure)
 
-  # Step 7: Filter Duplicates
+  #### Step 7: Filter by Threshold ####
   threshold = 0.8
-  matches = filterDuplicates(pairs, sim, threshold)
+  # Boolean mask of matching pairs
+  keepMask = sim >= threshold           # Vector of length m
+  matchedPairs = pairs[keepMask, ]      # Subset rows
 
-  # Step 8: Dummy implementations for testing
-  extractDuplicates = X[1:1,]  # mock: return first row
-  removeDuplicates = X[2:nrow(X),]  # mock: rest of the data
-
-  if (returnDuplicates) {
-    Y = extractDuplicates
-  } else {
-    Y = removeDuplicates
+  #### Step 8: Identify Duplicate Indices ####
+  n = nrow(X)
+  # Initialize flag vector
+  dupFlag = matrix(0, rows=n, cols=1)
+  # Mark duplicates (second element of each matched pair)
+  for (i in 1:nrow(matchedPairs)) {
+    idx = matchedPairs[i, 2]  # 1-based row index to remove
+    dupFlag[idx, 1] = 1
   }
+
+  # Indices of duplicates and uniques
+  dupIdxs  = which(dupFlag == 1)
+  keepIdxs = which(dupFlag == 0)
+
+  #### Step 9: Build Output Frame ####
+  if (returnDuplicates) {
+    Y = X[dupIdxs, ]
+  } else {
+    Y = X[keepIdxs, ]
+  }
+
+  return(Y)
 }
+
+#---------------- Helper Functions ----------------#
 
 computeDRMatrix = function(Frame[String] X, Matrix[String] vocab, Matrix[Double] gloveMatrix)
   return (Matrix[Double] V)
@@ -92,32 +92,26 @@ computeDRMatrix = function(Frame[String] X, Matrix[String] vocab, Matrix[Double]
   V = matrix(0, rows=n, cols=d)
 
   for (i in 1:n) {
-    line = concat(X[i,])
+    line  = concat(X[i,])
     clean = lowerCase(trim(line))
     words = strsplit(clean, " ")
 
     sumVec = matrix(0, rows=1, cols=d)
-    count = 0
-
-    for (k in 1:length(words)) {
-      w = words[k]
+    count  = 0
+    for (w in words) {
+      # linear lookup
       idx = -1
       for (m in 1:nrow(vocab)) {
         if (vocab[m,1] == w) {
-          idx = m
-          break
+          idx = m; break
         }
       }
       if (idx > 0) {
-        sumVec = sumVec + gloveMatrix[idx,]
-        count = count + 1
+        sumVec = sumVec + gloveMatrix[idx, ]
+        count  = count + 1
       }
     }
-    if (count > 0) {
-      V[i,] = sumVec / count
-    } else {
-      V[i,] = sumVec
-    }
+    V[i, ] = (count > 0) ? (sumVec / count) : sumVec
   }
 }
 
@@ -125,7 +119,7 @@ computeLSH = function(Matrix[Double] V, Matrix[Double] H)
   return (Matrix[Int] hashCodes)
 {
   P = V %*% t(H)
-  hashCodes = (P >= 0)
+  hashCodes = (P >= 0)  # 1 if projection ≥0, else 0
 }
 
 formBuckets = function(Matrix[Int] hashCodes)
@@ -133,10 +127,15 @@ formBuckets = function(Matrix[Int] hashCodes)
 {
   n = nrow(hashCodes)
   K = ncol(hashCodes)
-
   powers = matrix(0, rows=1, cols=K)
   for (k in 1:K) {
     powers[1, k] = 2^(K-k)
   }
   bucketIDs = hashCodes %*% t(powers)
 }
+
+#------------------ Entry Point ------------------#
+
+# SystemDS test harness will pass in X, gloveMatrix, vocab,
+# similarityMeasure, returnDuplicates, and expect variable Y.
+Y = f_dedup(X, gloveMatrix, vocab, similarityMeasure, returnDuplicates)
