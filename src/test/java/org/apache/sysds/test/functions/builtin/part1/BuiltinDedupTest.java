@@ -1,4 +1,4 @@
-package org.apache.sysds.test.functions.builtin.part2;
+package org.apache.sysds.test.functions.builtin.part1;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -16,7 +16,7 @@ import org.junit.runners.Parameterized;
 @net.jcip.annotations.NotThreadSafe
 public class BuiltinDedupTest extends AutomatedTestBase {
 	private final static String TEST_NAME = "dedup";
-	private final static String TEST_DIR = "scripts/builtin/";
+	private final static String TEST_DIR = "functions/builtin/";
 	private static final String TEST_CLASS_DIR = TEST_DIR + BuiltinDedupTest.class.getSimpleName() + "/";
 
 	@Parameterized.Parameter()
@@ -59,7 +59,8 @@ public class BuiltinDedupTest extends AutomatedTestBase {
 		try {
 			loadTestConfiguration(getTestConfiguration(TEST_NAME));
 			String HOME = SCRIPT_DIR + TEST_DIR;
-			fullDMLScriptName = HOME + TEST_NAME + ".dml";
+			fullDMLScriptName = "./scripts/builtin/dedup.dml";
+            // HOME + TEST_NAME + ".dml";
             programArgs = new String[]{
             	"-stats",
             	"-f", "f_dedup", // <- explicitly call the function
