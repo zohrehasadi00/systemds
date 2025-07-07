@@ -60,8 +60,18 @@ public class BuiltinDedupTest extends AutomatedTestBase {
 			loadTestConfiguration(getTestConfiguration(TEST_NAME));
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + TEST_NAME + ".dml";
-			programArgs = new String[]{"-stats", "-args", input("X"), input("gloveMatrix"), input("vocab"), similarityMeasure,
-				String.valueOf(returnDuplicates).toUpperCase(), output("Y")};
+            programArgs = new String[]{
+            	"-stats",
+            	"-f", "f_dedup", // <- explicitly call the function
+            	"-args",
+            	input("X"),
+            	input("gloveMatrix"),
+            	input("vocab"),
+            	similarityMeasure,
+            	String.valueOf(returnDuplicates).toUpperCase(),
+            	output("Y")
+            };
+
 
 			// Mock input data
 			String[][] X = new String[][]{
