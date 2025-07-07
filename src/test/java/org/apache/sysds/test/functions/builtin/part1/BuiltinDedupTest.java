@@ -16,7 +16,7 @@ import org.junit.runners.Parameterized;
 @net.jcip.annotations.NotThreadSafe
 public class BuiltinDedupTest extends AutomatedTestBase {
 	private final static String TEST_NAME = "dedup";
-	private final static String TEST_DIR = "functions/builtin/";
+	private final static String TEST_DIR = "scripts/builtin/";
 	private static final String TEST_CLASS_DIR = TEST_DIR + BuiltinDedupTest.class.getSimpleName() + "/";
 
 	@Parameterized.Parameter()
