@@ -84,7 +84,7 @@ f_dedup = function(
 
 #---------------- Helper Functions ----------------#
 
-computeDRMatrix = function(Frame[String] X, Matrix[String] vocab, Matrix[Double] gloveMatrix)
+computeDRMatrix = function(Frame[String] X, Matrix[String] vocab, Matrix[Double] gloveMatrixgit)
   return (Matrix[Double] V)
 {
   n = nrow(X)
