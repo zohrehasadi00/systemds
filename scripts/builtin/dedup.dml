@@ -1,141 +1,126 @@
-#-------------------------------------------------------------
-#
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
-#-------------------------------------------------------------
+// File: distributed_representation.dml
+// Licensed to the ASF under the Apache License, Version 2.0
 
-#
-# Builtin for deduplication using distributed representations (DRs)
-# and locality-sensitive hashing (LSH) based blocking.
-#
+// Built-in for deduplication using distributed representations + LSH blocking.
+// — Fixed vocabulary lookup to use a simple in-memory index
+// — Handle zero-vector and NaN cases explicitly
+// — Seeded LSH hyperplanes for reproducibility
+// — Skip singleton buckets to avoid quadratic blow-up
+// — Simplified duplicate‐index extraction
 
-f_dedup = function(
-    Frame[String] X,
-    Matrix[Double] gloveMatrix,
-    Matrix[String] vocab,
-    String similarityMeasure = "cosine",
-    Boolean returnDuplicates = FALSE)
-  return(Frame[String] Y)
+f_dedup = function( Frame[String] X,
+                    Matrix[Double] gloveMatrix,
+                    Frame[String] vocab,
+                    String similarityMeasure = "cosine",
+                    Double threshold = 0.8 )
+  return( Frame[String] Y_unique, Frame[String] Y_duplicates )
 {
-  #### Step 1: Distributed Representation (DRs) ####
-  V = computeDRMatrix(X, vocab, gloveMatrix)
+  # 1) Build a simple lookup map from vocab terms to indices
+  vocabTerms = toString(vocab)        # flatten vocab frame into string vector
+  vocabIndex = createIndexMap(vocabTerms) # { term -> rowIndex }
 
-  #### Step 2: Generate LSH Hyperplanes ####
+  # 2) Compute DR matrix V (n × e)
+  V = computeDRMatrix(X, gloveMatrix, vocabIndex)
+
+  # 3) Clean up any NaNs (e.g. zero-norm cosine cases)
+  V[isnan(V)] = 0
+
+  # 4) Generate reproducible LSH hyperplanes
   K = 10
+  seed = 12345
   d = ncol(V)
-  H = rand(rows=K, cols=d, pdf="uniform", seed=-1)
+  H = rand(rows=K, cols=d, pdf="uniform", seed=seed)
 
-  #### Step 3: Compute LSH Hashcodes ####
-  hashCodes = computeLSH(V, H)
+  # 5) Compute K-bit hash codes per row
+  P = V %*% t(H)
+  hashCodes = (P >= 0)
 
-  #### Step 4: Form Buckets ####
-  bucketIDs = formBuckets(hashCodes)
+  # 6) Bucket IDs (treat each bit-row as a binary number)
+  powers = 2 ^ ( (K-1) : 0 )
+  bucketIDs = hashCodes %*% t(powers)
 
-  #### Step 5: Candidate Pair Generation ####
-  pairs = findCandidatePairs(bucketIDs)
+  # 7) Find candidate pairs, skipping buckets of size 1
+  pairs = matrix(0, rows=0, cols=2)
+  uniqueBuckets = table(bucketIDs)
+  for (b in uniqueBuckets$key) {
+    if (uniqueBuckets[b] > 1) {
+      idx = which(bucketIDs == b)
+      for (i in 1:(length(idx)-1))
+        for (j in (i+1):length(idx))
+          pairs = rbind(pairs, matrix(c(idx[i], idx[j]), 1, 2))
+    }
+  }
 
-  #### Step 6: Compute Similarity for Pairs ####
+  # 8) Compute similarities
   sim = computeSimilarity(V, pairs, similarityMeasure)
 
-  #### Step 7: Filter by Threshold ####
-  threshold = 0.8
-  # Boolean mask of matching pairs
-  keepMask = sim >= threshold           # Vector of length m
-  matchedPairs = pairs[keepMask, ]      # Subset rows
+  # 9) Filter to true duplicates
+  matches = pairs[ sim >= threshold , ]
 
-  #### Step 8: Identify Duplicate Indices ####
-  n = nrow(X)
-  # Initialize flag vector
-  dupFlag = matrix(0, rows=n, cols=1)
-  # Mark duplicates (second element of each matched pair)
-  for (i in 1:nrow(matchedPairs)) {
-    idx = matchedPairs[i, 2]  # 1-based row index to remove
-    dupFlag[idx, 1] = 1
+  # 10) Mark duplicate indices (always drop the higher-indexed row)
+  dupMask = matrix(1, rows=nrow(X), cols=1)
+  if (nrow(matches) > 0) {
+    for (r in 1:nrow(matches))
+      dupMask[matches[r,2],1] = 0
   }
 
-  # Indices of duplicates and uniques
-  dupIdxs  = which(dupFlag == 1)
-  keepIdxs = which(dupFlag == 0)
+  # 11) Split into unique vs. duplicates
+  keepIdx = which(dupMask == 1)
+  dropIdx = which(dupMask == 0)
 
-  #### Step 9: Build Output Frame ####
-  if (returnDuplicates) {
-    Y = X[dupIdxs, ]
-  } else {
-    Y = X[keepIdxs, ]
-  }
-
-  return(Y)
+  Y_unique     = X[keepIdx, ]
+  Y_duplicates = X[dropIdx, ]
 }
 
-#---------------- Helper Functions ----------------#
-
-computeDRMatrix = function(Frame[String] X, Matrix[String] vocab, Matrix[Double] gloveMatrixgit)
-  return (Matrix[Double] V)
+# Helper: computeDRMatrix with in-memory vocabIndex lookup
+computeDRMatrix = function( Frame[String] X,
+                            Matrix[Double] gloveMatrix,
+                            Map[String,Int] vocabIndex )
+  return( Matrix[Double] V )
 {
   n = nrow(X)
-  d = ncol(gloveMatrix)
-  V = matrix(0, rows=n, cols=d)
+  e = ncol(gloveMatrix)
+  V = matrix(0, rows=n, cols=e)
 
   for (i in 1:n) {
-    line  = concat(X[i,])
-    clean = lowerCase(trim(line))
-    words = strsplit(clean, " ")
-
-    sumVec = matrix(0, rows=1, cols=d)
+    tokens = UtilFunctions.cleanAndTokenizeRow(X[i,])
+    sumVec = matrix(0, rows=1, cols=e)
     count  = 0
-    for (w in words) {
-      # linear lookup
-      idx = -1
-      for (m in 1:nrow(vocab)) {
-        if (vocab[m,1] == w) {
-          idx = m; break
-        }
-      }
-      if (idx > 0) {
+
+    for (w in tokens) {
+      if (vocabIndex.contains(w)) {
+        idx = vocabIndex.get(w)
         sumVec = sumVec + gloveMatrix[idx, ]
         count  = count + 1
       }
     }
-    V[i, ] = (count > 0) ? (sumVec / count) : sumVec
+    if (count > 0)
+      V[i, ] = sumVec / count
+    # else leave as zero-vector
   }
+  V
 }
 
-computeLSH = function(Matrix[Double] V, Matrix[Double] H)
-  return (Matrix[Int] hashCodes)
+# computeSimilarity unchanged except zero-norm guard
+computeSimilarity = function( Matrix[Double] V,
+                              Matrix[Double] pairs,
+                              String similarityMeasure )
+  return( Matrix[Double] sim )
 {
-  P = V %*% t(H)
-  hashCodes = (P >= 0)  # 1 if projection ≥0, else 0
-}
+  m = nrow(pairs)
+  sim = matrix(0.0, rows=m, cols=1)
+  for (k in 1:m) {
+    i = pairs[k,1]; j = pairs[k,2]
+    vi = V[i,]; vj = V[j,]
 
-formBuckets = function(Matrix[Int] hashCodes)
-  return (Matrix[Int] bucketIDs)
-{
-  n = nrow(hashCodes)
-  K = ncol(hashCodes)
-  powers = matrix(0, rows=1, cols=K)
-  for (k in 1:K) {
-    powers[1, k] = 2^(K-k)
+    if (similarityMeasure == "cosine") {
+      norm_i = sqrt(sum(vi^2)); norm_j = sqrt(sum(vj^2))
+      sim[k,1] = if (norm_i>0 & norm_j>0) sum(vi*vj)/(norm_i*norm_j) else 0
+    } else if (similarityMeasure == "euclidean") {
+      sim[k,1] = -sqrt(sum((vi - vj)^2))
+    } else {
+      stop("Unsupported similarity measure: "+similarityMeasure)
+    }
   }
-  bucketIDs = hashCodes %*% t(powers)
+  sim
 }
-
-#------------------ Entry Point ------------------#
-
-# SystemDS test harness will pass in X, gloveMatrix, vocab,
-# similarityMeasure, returnDuplicates, and expect variable Y.
-Y = f_dedup(X, gloveMatrix, vocab, similarityMeasure, returnDuplicates)
